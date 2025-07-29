@@ -463,7 +463,7 @@ class CriticalPathApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Analizador de Rutas de Proyecto',
+      title: 'Analizador de Rutas de proyecto, Israel Andres Rosales',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.indigo,
