@@ -1,18 +1,6 @@
-/*
-* ======================================================================
-* NOTA IMPORTANTE: Si ves errores como "Target of URI doesn't exist"
-* o "Undefined class 'Digraph'", sigue estos pasos:
-*
-* 1. Guarda este archivo (main.dart).
-* 2. En la terminal de VS Code, ejecuta el comando: flutter pub get
-* 3. Reinicia VS Code por completo (cierra y vuelve a abrir).
-*
-* Esto forzará al editor a reconocer los paquetes que hemos añadido.
-* ======================================================================
-*/
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:graph/graph.dart';
+import 'package:graphs/graphs.dart' as graphs;
 import 'package:graphview/GraphView.dart' as gv;
 import 'dart:math';
 
@@ -24,12 +12,11 @@ class Connection {
   final TextEditingController durationController = TextEditingController();
 }
 
-// Clase para almacenar los datos calculados de la ruta crítica para cada nodo.
 class NodeData {
-  int es = 0; // Earliest Start (Inicio Cercano)
-  int ef = 0; // Earliest Finish (Término Cercano)
-  int ls = 0; // Latest Start (Inicio Lejano)
-  int lf = 0; // Latest Finish (Término Lejano)
+  int es = 0; // Earliest Start (Inicio más temprano)
+  int ef = 0; // Earliest Finish (Fin más temprano)
+  int ls = 0; // Latest Start (Inicio más tardío)
+  int lf = 0; // Latest Finish (Fin más tardío)
   int slack = 0; // Holgura
 }
 
@@ -64,7 +51,7 @@ class GraphState with ChangeNotifier {
 
   // --- LÓGICA DE CÁLCULO PRINCIPAL ---
   void calculatePaths(BuildContext context) {
-    final graph = Digraph<String, int>();
+    final graph = <String, Map<String, int>>{};
     final allNodeNames = <String>{};
 
     for (var conn in connections) {
@@ -73,25 +60,19 @@ class GraphState with ChangeNotifier {
       final durationStr = conn.durationController.text.trim();
 
       if (origin.isEmpty || dest.isEmpty || durationStr.isEmpty) {
-        _showAlertDialog(
-          context,
-          'Error',
-          'Todos los campos de conexión deben estar llenos.',
-        );
+        _showAlertDialog(context, 'Error',
+            'Todos los campos de conexión deben estar llenos.');
         return;
       }
 
       final duration = int.tryParse(durationStr);
-      if (duration == null) {
-        _showAlertDialog(
-          context,
-          'Error',
-          'La duración debe ser un número entero.',
-        );
+      if (duration == null || duration < 0) {
+        _showAlertDialog(context, 'Error',
+            'La duración debe ser un número entero no negativo.');
         return;
       }
 
-      graph.addEdge(origin, dest, value: duration);
+      graph.putIfAbsent(origin, () => {})[dest] = duration;
       allNodeNames.add(origin);
       allNodeNames.add(dest);
     }
@@ -101,21 +82,29 @@ class GraphState with ChangeNotifier {
 
     if (startNode.isEmpty || endNode.isEmpty) {
       _showAlertDialog(
-        context,
-        'Error',
-        'Debe especificar un nodo inicial y final.',
-      );
+          context, 'Error', 'Debe especificar un nodo inicial y final.');
       return;
     }
 
-    // Calcular ruta corta
+    if (!allNodeNames.contains(startNode) || !allNodeNames.contains(endNode)) {
+      _showAlertDialog(context, 'Error',
+          'El nodo de inicio o fin no existe en las conexiones definidas.');
+      return;
+    }
+
+    // Calcular ruta corta usando Dijkstra
     try {
-      final shortest = graph.shortestPath(startNode, endNode);
-      final shortestDuration = _calculatePathDuration(graph, shortest);
-      shortestPathResult =
-          '${shortest.join(' → ')} (Duración: $shortestDuration semanas)';
+      final shortest = _dijkstra(graph, startNode, endNode);
+
+      if (shortest.isEmpty) {
+        shortestPathResult = 'No se encontró una ruta.';
+      } else {
+        final shortestDuration = _calculatePathDuration(graph, shortest);
+        shortestPathResult =
+            '${shortest.join(' → ')} (Duración: $shortestDuration semanas)';
+      }
     } catch (e) {
-      shortestPathResult = 'No se encontró una ruta.';
+      shortestPathResult = 'Error al calcular la ruta corta.';
     }
 
     // Calcular ruta larga (crítica) y datos CPM
@@ -137,70 +126,127 @@ class GraphState with ChangeNotifier {
         longestPathResult =
             '${longestPath.join(' → ')} (Duración: $maxDuration semanas)';
 
-        // ¡NUEVO! Calcular datos CPM
-        cpmData = _calculateCPM(graph, allNodeNames, startNode, maxDuration);
+        cpmData =
+            _calculateCPM(graph, allNodeNames.toList(), startNode, endNode);
 
         _buildGraphView(graph, allNodeNames, longestPath);
       }
     } catch (e) {
-      longestPathResult = 'No se encontró una ruta.';
+      longestPathResult = 'Error al calcular la ruta larga.';
+      graphView = gv.Graph();
     }
 
     notifyListeners();
   }
 
-  // --- MÉTODOS DE CÁLCULO CPM (NUEVO) ---
+  // --- ALGORITMOS DE GRAFOS ---
 
-  Map<String, NodeData> _calculateCPM(
-    Digraph<String, int> graph,
-    Set<String> allNodes,
-    String startNode,
-    int projectDuration,
-  ) {
-    Map<String, NodeData> data = {for (var node in allNodes) node: NodeData()};
-    var topologicalSort = graph.topologicalSort();
+  // Implementación del algoritmo de Dijkstra para la ruta más corta ponderada
+  List<String> _dijkstra(
+      Map<String, Map<String, int>> graph, String start, String end) {
+    var distances = <String, int>{};
+    var previous = <String, String?>{};
+    var nodes = <String>{};
 
-    // Forward Pass (ES, EF)
-    for (var node in topologicalSort) {
-      if (node == startNode) {
-        data[node]!.es = 0;
-      } else {
-        var predecessors = graph.predecessors(node);
-        data[node]!.es = predecessors.map((p) => data[p]!.ef).reduce(max);
+    for (var vertex in graph.keys) {
+      nodes.add(vertex);
+      for (var neighbor in graph[vertex]!.keys) {
+        nodes.add(neighbor);
       }
-      // La duración de una "actividad" es la duración de la arista que LLEGA a ella.
-      // Esto es una simplificación. En CPM real, las actividades son las aristas.
-      // Aquí, asumimos que la duración es del nodo.
-      var incomingEdges = graph.predecessors(node);
-      var duration = incomingEdges.isNotEmpty
-          ? graph.edgeValue(incomingEdges.first, node)!
-          : 0;
-      if (node == startNode)
-        duration =
-            0; // El nodo de inicio no tiene duración de actividad previa.
-
-      data[node]!.ef = data[node]!.es + duration;
     }
 
-    // Backward Pass (LF, LS)
-    var endNode = topologicalSort.last;
-    data[endNode]!.lf = data[endNode]!.ef; // O projectDuration
+    for (var vertex in nodes) {
+      distances[vertex] = 999999; // Infinito
+      previous[vertex] = null;
+    }
+    distances[start] = 0;
 
-    for (var node in topologicalSort.reversed) {
-      if (node == endNode) {
-        data[node]!.lf = data[node]!.ef;
-      } else {
-        var successors = graph.edges(node);
-        data[node]!.lf = successors.map((s) => data[s]!.ls).reduce(min);
+    while (nodes.isNotEmpty) {
+      String? smallest;
+      for (var node in nodes) {
+        if (smallest == null || distances[node]! < distances[smallest]!) {
+          smallest = node;
+        }
       }
-      var incomingEdges = graph.predecessors(node);
-      var duration = incomingEdges.isNotEmpty
-          ? graph.edgeValue(incomingEdges.first, node)!
-          : 0;
-      if (node == startNode) duration = 0;
 
-      data[node]!.ls = data[node]!.lf - duration;
-      data[node]!.slack = data[node]!.ls - data[node]!.es;
+      if (smallest == null) break;
+      nodes.remove(smallest);
+
+      if (smallest == end) {
+        final path = <String>[];
+        while (previous[smallest] != null) {
+          path.insert(0, smallest!);
+          smallest = previous[smallest];
+        }
+        path.insert(0, start);
+        return path;
+      }
+
+      if (graph[smallest] == null) continue;
+
+      for (var neighbor in graph[smallest]!.keys) {
+        var alt = distances[smallest]! + graph[smallest]![neighbor]!;
+        if (alt < distances[neighbor]!) {
+          distances[neighbor] = alt;
+          previous[neighbor] = smallest;
+        }
+      }
+    }
+
+    return [];
+  }
+
+  // Lógica para la Ruta Crítica (CPM)
+  Map<String, NodeData> _calculateCPM(
+    Map<String, Map<String, int>> graph,
+    List<String> allNodes,
+    String startNode,
+    String endNode,
+  ) {
+    Map<String, NodeData> data = {for (var node in allNodes) node: NodeData()};
+    var sortedNodes =
+        graphs.topologicalSort(allNodes, (n) => graph[n]?.keys ?? []).toList();
+
+    // Forward Pass
+    for (var node in sortedNodes) {
+      var predecessors =
+          allNodes.where((p) => graph[p]?.containsKey(node) ?? false);
+      int maxEf = 0;
+      for (var pred in predecessors) {
+        int currentEf = data[pred]!.ef + (graph[pred]![node] ?? 0);
+        if (currentEf > maxEf) {
+          maxEf = currentEf;
+        }
+      }
+      data[node]!.ef = maxEf;
+      data[node]!.es = maxEf;
+    }
+
+    // Backward Pass
+    int projectDuration = data[endNode]!.ef;
+    for (var nodeData in data.values) {
+      nodeData.lf = projectDuration;
+    }
+
+    for (var node in sortedNodes.reversed) {
+      var successors = (graph[node]?.keys ?? []).toList();
+      if (successors.isEmpty) {
+        data[node]!.lf = projectDuration;
+      } else {
+        int minLf = projectDuration;
+        for (var succ in successors) {
+          int currentLf = data[succ]!.lf - (graph[node]![succ] ?? 0);
+          if (currentLf < minLf) {
+            minLf = currentLf;
+          }
+        }
+        data[node]!.lf = minLf;
+      }
+    }
+
+    for (var node in allNodes) {
+      data[node]!.ls = data[node]!.lf;
+      data[node]!.slack = data[node]!.lf - data[node]!.ef;
     }
 
     return data;
@@ -208,16 +254,17 @@ class GraphState with ChangeNotifier {
 
   // --- MÉTODOS AUXILIARES ---
 
-  int _calculatePathDuration(Digraph<String, int> graph, List<String> path) {
+  int _calculatePathDuration(
+      Map<String, Map<String, int>> graph, List<String> path) {
     int total = 0;
     for (int i = 0; i < path.length - 1; i++) {
-      total += graph.edgeValue(path[i], path[i + 1])!;
+      total += graph[path[i]]![path[i + 1]]!;
     }
     return total;
   }
 
   List<List<String>> _findAllPaths(
-    Digraph<String, int> graph,
+    Map<String, Map<String, int>> graph,
     String start,
     String end,
   ) {
@@ -229,8 +276,7 @@ class GraphState with ChangeNotifier {
         allPaths.add(List.from(currentPath));
         return;
       }
-
-      final neighbors = List<String>.from(graph.edges(currentNode));
+      final neighbors = graph[currentNode]?.keys.toList() ?? [];
       for (var neighbor in neighbors) {
         if (!currentPath.contains(neighbor)) {
           currentPath.add(neighbor);
@@ -245,7 +291,7 @@ class GraphState with ChangeNotifier {
   }
 
   void _buildGraphView(
-    Digraph<String, int> logicGraph,
+    Map<String, Map<String, int>> logicGraph,
     Set<String> nodeNames,
     List<String> criticalPath,
   ) {
@@ -259,17 +305,19 @@ class GraphState with ChangeNotifier {
     }
 
     logicGraph.forEach((node, neighbors) {
-      for (var neighbor in neighbors) {
-        final isCritical =
-            (cpmData[node]?.slack == 0) && (cpmData[neighbor]?.slack == 0);
-        gvGraph.addEdge(
-          nodesMap[node]!,
-          nodesMap[neighbor]!,
-          paint: Paint()
-            ..color = isCritical ? Colors.redAccent : Colors.grey
-            ..strokeWidth = isCritical ? 2.5 : 1.5,
-        );
-      }
+      neighbors.keys.forEach((neighbor) {
+        if (nodesMap.containsKey(node) && nodesMap.containsKey(neighbor)) {
+          final isCritical =
+              (cpmData[node]?.slack == 0) && (cpmData[neighbor]?.slack == 0);
+          gvGraph.addEdge(
+            nodesMap[node]!,
+            nodesMap[neighbor]!,
+            paint: Paint()
+              ..color = isCritical ? Colors.redAccent : Colors.grey
+              ..strokeWidth = isCritical ? 2.5 : 1.5,
+          );
+        }
+      });
     });
 
     graphView = gvGraph;
@@ -280,7 +328,7 @@ class GraphState with ChangeNotifier {
       ..orientation = (gv.BuchheimWalkerConfiguration.ORIENTATION_LEFT_RIGHT);
   }
 
-  // --- WIDGETS DE VISUALIZACIÓN (NUEVO DISEÑO) ---
+  // --- WIDGETS DE VISUALIZACIÓN ---
 
   Widget _buildNodeWidget(String name, NodeData data) {
     bool isCritical = data.slack == 0;
@@ -308,10 +356,9 @@ class GraphState with ChangeNotifier {
             child: Text(
               name,
               style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16),
             ),
           ),
           const Divider(height: 10, thickness: 1),
@@ -337,14 +384,10 @@ class GraphState with ChangeNotifier {
   Widget _buildCpmValue(String label, int value) {
     return Column(
       children: [
-        Text(
-          label,
-          style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
-        ),
-        Text(
-          value.toString(),
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-        ),
+        Text(label,
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+        Text(value.toString(),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
       ],
     );
   }
@@ -459,22 +502,16 @@ class _InputPanel extends StatelessWidget {
                 const Row(
                   children: [
                     Expanded(
-                      child: Text(
-                        'Origen',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
+                      child: Text('Origen',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
                     Expanded(
-                      child: Text(
-                        'Destino',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
+                      child: Text('Destino',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
                     Expanded(
-                      child: Text(
-                        'Duración (sem)',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
+                      child: Text('Duración (sem)',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
                     SizedBox(width: 48),
                   ],
@@ -491,21 +528,18 @@ class _InputPanel extends StatelessWidget {
                         children: [
                           Expanded(
                             child: _buildTextField(
-                              state.connections[index].originController,
-                            ),
+                                state.connections[index].originController),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: _buildTextField(
-                              state.connections[index].destinationController,
-                            ),
+                                state.connections[index].destinationController),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: _buildTextField(
-                              state.connections[index].durationController,
-                              isNumber: true,
-                            ),
+                                state.connections[index].durationController,
+                                isNumber: true),
                           ),
                           IconButton(
                             icon: const Icon(Icons.remove_circle_outline),
@@ -530,16 +564,12 @@ class _InputPanel extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _buildLabeledTextField(
-                        'Nodo Inicial',
-                        state.startNodeController,
-                      ),
+                          'Nodo Inicial', state.startNodeController),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
                       child: _buildLabeledTextField(
-                        'Nodo Final',
-                        state.endNodeController,
-                      ),
+                          'Nodo Final', state.endNodeController),
                     ),
                   ],
                 ),
@@ -550,9 +580,7 @@ class _InputPanel extends StatelessWidget {
                     label: const Text('Calcular Rutas'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 32,
-                        vertical: 16,
-                      ),
+                          horizontal: 32, vertical: 16),
                       textStyle: Theme.of(context).textTheme.titleMedium,
                     ),
                     onPressed: () => state.calculatePaths(context),
@@ -566,10 +594,8 @@ class _InputPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildTextField(
-    TextEditingController controller, {
-    bool isNumber = false,
-  }) {
+  Widget _buildTextField(TextEditingController controller,
+      {bool isNumber = false}) {
     return TextField(
       controller: controller,
       keyboardType: isNumber ? TextInputType.number : TextInputType.text,
@@ -581,9 +607,7 @@ class _InputPanel extends StatelessWidget {
   }
 
   Widget _buildLabeledTextField(
-    String label,
-    TextEditingController controller,
-  ) {
+      String label, TextEditingController controller) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -611,16 +635,13 @@ class _GraphVisualizer extends StatelessWidget {
                       children: [
                         const Icon(Icons.share, size: 48, color: Colors.grey),
                         const SizedBox(height: 16),
-                        Text(
-                          'Visualización del Grafo',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
+                        Text('Visualización del Grafo',
+                            style: Theme.of(context).textTheme.titleLarge),
                         const SizedBox(height: 8),
                         const Text(
-                          "Presiona 'Calcular Rutas' para ver el grafo.",
-                          style: TextStyle(color: Colors.grey),
-                          textAlign: TextAlign.center,
-                        ),
+                            "Presiona 'Calcular Rutas' para ver el grafo.",
+                            style: TextStyle(color: Colors.grey),
+                            textAlign: TextAlign.center),
                       ],
                     ),
                   )
@@ -632,9 +653,7 @@ class _GraphVisualizer extends StatelessWidget {
                     child: gv.GraphView(
                       graph: state.graphView,
                       algorithm: gv.BuchheimWalkerAlgorithm(
-                        state.builder,
-                        gv.TreeEdgeRenderer(state.builder),
-                      ),
+                          state.builder, gv.TreeEdgeRenderer(state.builder)),
                       paint: Paint()
                         ..color = Colors.grey
                         ..strokeWidth = 1
@@ -661,17 +680,13 @@ class _ResultsPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Panel de Resultados',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
+            Text('Panel de Resultados',
+                style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
             _buildResultRow('Ruta más Corta:', state.shortestPathResult),
             const SizedBox(height: 8),
             _buildResultRow(
-              'Ruta más Larga (Crítica):',
-              state.longestPathResult,
-            ),
+                'Ruta más Larga (Crítica):', state.longestPathResult),
           ],
         ),
       ),
