@@ -31,7 +31,6 @@ class GraphState with ChangeNotifier {
   String longestPathResult = 'Aún no calculado.';
 
   gv.Graph graphView = gv.Graph();
-  gv.BuchheimWalkerConfiguration builder = gv.BuchheimWalkerConfiguration();
   Map<String, NodeData> cpmData = {};
 
   void addConnection() {
@@ -49,8 +48,32 @@ class GraphState with ChangeNotifier {
     }
   }
 
+  // --- NUEVA FUNCIÓN DE RESETEO ---
+  void resetState() {
+    print("\n===== ESTADO RESETEADO =====");
+    // Limpiar todas las conexiones y dejar una en blanco
+    for (var conn in connections) {
+      conn.originController.clear();
+      conn.destinationController.clear();
+      conn.durationController.clear();
+    }
+    connections.removeRange(1, connections.length);
+
+    // Limpiar campos y resultados
+    startNodeController.clear();
+    endNodeController.clear();
+    shortestPathResult = 'Aún no calculado.';
+    longestPathResult = 'Aún no calculado.';
+    graphView = gv.Graph();
+    cpmData.clear();
+
+    notifyListeners();
+  }
+
   // --- LÓGICA DE CÁLCULO PRINCIPAL ---
   void calculatePaths(BuildContext context) {
+    print("\n\n===== INICIANDO CÁLCULO DE RUTAS =====");
+
     final graph = <String, Map<String, int>>{};
     final allNodeNames = <String>{};
 
@@ -77,8 +100,14 @@ class GraphState with ChangeNotifier {
       allNodeNames.add(dest);
     }
 
+    print("✅ Grafo construido desde la entrada:");
+    graph.forEach((key, value) {
+      print("   - Desde '$key' -> $value");
+    });
+
     final startNode = startNodeController.text.trim();
     final endNode = endNodeController.text.trim();
+    print("📍 Nodo de Inicio: '$startNode', Nodo Final: '$endNode'");
 
     if (startNode.isEmpty || endNode.isEmpty) {
       _showAlertDialog(
@@ -92,9 +121,9 @@ class GraphState with ChangeNotifier {
       return;
     }
 
-    // Calcular ruta corta usando Dijkstra
+    print("\n--- Calculando Ruta Más Corta (Dijkstra) ---");
     try {
-      final shortest = _dijkstra(graph, startNode, endNode);
+      final shortest = _dijkstra(graph, startNode, endNode, allNodeNames);
 
       if (shortest.isEmpty) {
         shortestPathResult = 'No se encontró una ruta.';
@@ -103,13 +132,18 @@ class GraphState with ChangeNotifier {
         shortestPathResult =
             '${shortest.join(' → ')} (Duración: $shortestDuration semanas)';
       }
+      print("Resultado Ruta Corta: $shortestPathResult");
     } catch (e) {
       shortestPathResult = 'Error al calcular la ruta corta.';
+      print("Error en Dijkstra: $e");
     }
 
-    // Calcular ruta larga (crítica) y datos CPM
+    print("\n--- Calculando Ruta Crítica y CPM ---");
     try {
       final allPaths = _findAllPaths(graph, startNode, endNode);
+      print(
+          "Se encontraron ${allPaths.length} rutas posibles entre '$startNode' y '$endNode'.");
+
       if (allPaths.isEmpty) {
         longestPathResult = 'No se encontró una ruta.';
         graphView = gv.Graph();
@@ -125,38 +159,36 @@ class GraphState with ChangeNotifier {
         }
         longestPathResult =
             '${longestPath.join(' → ')} (Duración: $maxDuration semanas)';
+        print("Resultado Ruta Larga (Crítica): $longestPathResult");
 
+        print("\n--- Realizando Análisis CPM ---");
         cpmData =
             _calculateCPM(graph, allNodeNames.toList(), startNode, endNode);
+        cpmData.forEach((node, data) {
+          print(
+              "Nodo: $node | IC:${data.es} TC:${data.ef} | IL:${data.ls} TL:${data.lf} | Holgura:${data.slack}");
+        });
 
         _buildGraphView(graph, allNodeNames, longestPath);
       }
     } catch (e) {
       longestPathResult = 'Error al calcular la ruta larga.';
       graphView = gv.Graph();
+      print("Error en CPM o Ruta Larga: $e");
     }
 
+    print("===== CÁLCULO FINALIZADO =====");
     notifyListeners();
   }
 
-  // --- ALGORITMOS DE GRAFOS ---
-
-  // Implementación del algoritmo de Dijkstra para la ruta más corta ponderada
-  List<String> _dijkstra(
-      Map<String, Map<String, int>> graph, String start, String end) {
+  List<String> _dijkstra(Map<String, Map<String, int>> graph, String start,
+      String end, Set<String> allNodes) {
     var distances = <String, int>{};
     var previous = <String, String?>{};
-    var nodes = <String>{};
-
-    for (var vertex in graph.keys) {
-      nodes.add(vertex);
-      for (var neighbor in graph[vertex]!.keys) {
-        nodes.add(neighbor);
-      }
-    }
+    var nodes = allNodes.toSet();
 
     for (var vertex in nodes) {
-      distances[vertex] = 999999; // Infinito
+      distances[vertex] = 999999;
       previous[vertex] = null;
     }
     distances[start] = 0;
@@ -169,16 +201,18 @@ class GraphState with ChangeNotifier {
         }
       }
 
-      if (smallest == null) break;
+      if (smallest == null || distances[smallest] == 999999) break;
+
       nodes.remove(smallest);
 
       if (smallest == end) {
         final path = <String>[];
-        while (previous[smallest] != null) {
-          path.insert(0, smallest!);
-          smallest = previous[smallest];
+        String? currentNullable = smallest;
+        while (currentNullable != null) {
+          final String current = currentNullable;
+          path.insert(0, current);
+          currentNullable = previous[current];
         }
-        path.insert(0, start);
         return path;
       }
 
@@ -196,7 +230,6 @@ class GraphState with ChangeNotifier {
     return [];
   }
 
-  // Lógica para la Ruta Crítica (CPM)
   Map<String, NodeData> _calculateCPM(
     Map<String, Map<String, int>> graph,
     List<String> allNodes,
@@ -207,7 +240,6 @@ class GraphState with ChangeNotifier {
     var sortedNodes =
         graphs.topologicalSort(allNodes, (n) => graph[n]?.keys ?? []).toList();
 
-    // Forward Pass
     for (var node in sortedNodes) {
       var predecessors =
           allNodes.where((p) => graph[p]?.containsKey(node) ?? false);
@@ -222,7 +254,6 @@ class GraphState with ChangeNotifier {
       data[node]!.es = maxEf;
     }
 
-    // Backward Pass
     int projectDuration = data[endNode]!.ef;
     for (var nodeData in data.values) {
       nodeData.lf = projectDuration;
@@ -230,14 +261,16 @@ class GraphState with ChangeNotifier {
 
     for (var node in sortedNodes.reversed) {
       var successors = (graph[node]?.keys ?? []).toList();
-      if (successors.isEmpty) {
-        data[node]!.lf = projectDuration;
+      if (node == endNode) {
+        data[node]!.lf = data[node]!.ef;
       } else {
         int minLf = projectDuration;
-        for (var succ in successors) {
-          int currentLf = data[succ]!.lf - (graph[node]![succ] ?? 0);
-          if (currentLf < minLf) {
-            minLf = currentLf;
+        if (successors.isNotEmpty) {
+          for (var succ in successors) {
+            int currentLf = data[succ]!.lf - (graph[node]![succ] ?? 0);
+            if (currentLf < minLf) {
+              minLf = currentLf;
+            }
           }
         }
         data[node]!.lf = minLf;
@@ -252,13 +285,11 @@ class GraphState with ChangeNotifier {
     return data;
   }
 
-  // --- MÉTODOS AUXILIARES ---
-
   int _calculatePathDuration(
       Map<String, Map<String, int>> graph, List<String> path) {
     int total = 0;
     for (int i = 0; i < path.length - 1; i++) {
-      total += graph[path[i]]![path[i + 1]]!;
+      total += graph[path[i]]![path[i + 1]] ?? 0;
     }
     return total;
   }
@@ -321,14 +352,7 @@ class GraphState with ChangeNotifier {
     });
 
     graphView = gvGraph;
-    builder
-      ..siblingSeparation = (25)
-      ..levelSeparation = (50)
-      ..subtreeSeparation = (25)
-      ..orientation = (gv.BuchheimWalkerConfiguration.ORIENTATION_LEFT_RIGHT);
   }
-
-  // --- WIDGETS DE VISUALIZACIÓN ---
 
   Widget _buildNodeWidget(String name, NodeData data) {
     bool isCritical = data.slack == 0;
@@ -423,7 +447,7 @@ class GraphState with ChangeNotifier {
   }
 }
 
-// --- PUNTO DE ENTRADA Y WIDGETS DE LA UI (SIN CAMBIOS) ---
+// --- PUNTO DE ENTRADA Y WIDGETS DE LA UI ---
 void main() {
   runApp(
     ChangeNotifierProvider(
@@ -484,6 +508,44 @@ class GraphHomePage extends StatelessWidget {
 }
 
 class _InputPanel extends StatelessWidget {
+  // --- NUEVO DIÁLOGO DE CONFIRMACIÓN ---
+  Future<void> _showResetConfirmationDialog(
+      BuildContext context, GraphState state) async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false, // El usuario debe tocar un botón para cerrar
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Confirmar Reseteo'),
+          content: const SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text(
+                    '¿Estás seguro de que quieres borrar todos los datos del grafo?'),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancelar'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Resetear'),
+              onPressed: () {
+                state.resetState();
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<GraphState>(
@@ -494,25 +556,20 @@ class _InputPanel extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Panel de Entrada',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
+                Text('Panel de Entrada',
+                    style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 16),
                 const Row(
                   children: [
                     Expanded(
-                      child: Text('Origen',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                    ),
+                        child: Text('Origen',
+                            style: TextStyle(fontWeight: FontWeight.bold))),
                     Expanded(
-                      child: Text('Destino',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                    ),
+                        child: Text('Destino',
+                            style: TextStyle(fontWeight: FontWeight.bold))),
                     Expanded(
-                      child: Text('Duración (sem)',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                    ),
+                        child: Text('Duración (sem)',
+                            style: TextStyle(fontWeight: FontWeight.bold))),
                     SizedBox(width: 48),
                   ],
                 ),
@@ -527,20 +584,17 @@ class _InputPanel extends StatelessWidget {
                       child: Row(
                         children: [
                           Expanded(
-                            child: _buildTextField(
-                                state.connections[index].originController),
-                          ),
+                              child: _buildTextField(
+                                  state.connections[index].originController)),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: _buildTextField(
-                                state.connections[index].destinationController),
-                          ),
+                              child: _buildTextField(state
+                                  .connections[index].destinationController)),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: _buildTextField(
-                                state.connections[index].durationController,
-                                isNumber: true),
-                          ),
+                              child: _buildTextField(
+                                  state.connections[index].durationController,
+                                  isNumber: true)),
                           IconButton(
                             icon: const Icon(Icons.remove_circle_outline),
                             onPressed: () => state.removeConnection(index),
@@ -563,28 +617,46 @@ class _InputPanel extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(
-                      child: _buildLabeledTextField(
-                          'Nodo Inicial', state.startNodeController),
-                    ),
+                        child: _buildLabeledTextField(
+                            'Nodo Inicial', state.startNodeController)),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: _buildLabeledTextField(
-                          'Nodo Final', state.endNodeController),
-                    ),
+                        child: _buildLabeledTextField(
+                            'Nodo Final', state.endNodeController)),
                   ],
                 ),
                 const SizedBox(height: 24),
-                Center(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.calculate),
-                    label: const Text('Calcular Rutas'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 32, vertical: 16),
-                      textStyle: Theme.of(context).textTheme.titleMedium,
+                // --- NUEVO ROW PARA LOS BOTONES DE ACCIÓN ---
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // Botón de Resetear
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Resetear'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade800,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 24, vertical: 16),
+                        textStyle: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      onPressed: () =>
+                          _showResetConfirmationDialog(context, state),
                     ),
-                    onPressed: () => state.calculatePaths(context),
-                  ),
+                    const SizedBox(width: 16),
+                    // Botón de Calcular
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.calculate),
+                      label: const Text('Calcular Rutas'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 32, vertical: 16),
+                        textStyle: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      onPressed: () => state.calculatePaths(context),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -652,8 +724,8 @@ class _GraphVisualizer extends StatelessWidget {
                     maxScale: 5.6,
                     child: gv.GraphView(
                       graph: state.graphView,
-                      algorithm: gv.BuchheimWalkerAlgorithm(
-                          state.builder, gv.TreeEdgeRenderer(state.builder)),
+                      algorithm:
+                          gv.FruchtermanReingoldAlgorithm(iterations: 200),
                       paint: Paint()
                         ..color = Colors.grey
                         ..strokeWidth = 1
