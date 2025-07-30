@@ -1,3 +1,18 @@
+// Analizador de Rutas de Proyecto
+
+// Una aplicación de escritorio y móvil desarrollada con Flutter para calcular y visualizar la ruta crítica de proyectos.
+
+// ## Autor
+
+// * **Desarrollador Principal:** Xavier Baque y Jordan Pincha
+// * **Contacto:** xavier.18.2018@hotmail.com
+
+// ## Propiedad Intelectual
+
+// © 2025 Xavier Fernando Baque Velez. Todos los derechos reservados.
+
+// Este proyecto está protegido bajo la Licencia MIT. Por favor, consulte el archivo `LICENSE` para más detalles.
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:graphs/graphs.dart' as graphs;
@@ -487,7 +502,9 @@ class GraphHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Analizador de Rutas de Proyecto')),
+      appBar: AppBar(
+          title: const Text(
+              'Analizador de Rutas de proyecto, Israel Andres Rosales')),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
