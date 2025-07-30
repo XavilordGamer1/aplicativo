@@ -322,29 +322,21 @@ class GraphState with ChangeNotifier {
       nodesMap[name] = gv.Node(nodeWidget);
       gvGraph.addNode(nodesMap[name]!);
     }
-
-    // ***** CAMBIO IMPORTANTE AQUÍ *****
     logicGraph.forEach((node, neighbors) {
       neighbors.forEach((neighbor, duration) {
         if (nodesMap.containsKey(node) && nodesMap.containsKey(neighbor)) {
           final isCritical =
               (cpmData[node]?.slack == 0) && (cpmData[neighbor]?.slack == 0);
-
-          // Crear un nodo intermedio para la duración
           final weightNode = gv.Node(_buildWeightWidget(duration));
           gvGraph.addNode(weightNode);
-
-          // Crear las dos mitades de la flecha
           final paint = Paint()
             ..color = isCritical ? Colors.redAccent : Colors.grey
             ..strokeWidth = isCritical ? 2.5 : 1.5;
-
           gvGraph.addEdge(nodesMap[node]!, weightNode, paint: paint);
           gvGraph.addEdge(weightNode, nodesMap[neighbor]!, paint: paint);
         }
       });
     });
-
     graphView = gvGraph;
   }
 
@@ -409,14 +401,11 @@ class GraphState with ChangeNotifier {
     );
   }
 
-  // ¡NUEVO! Widget para la duración en la flecha
   Widget _buildWeightWidget(int duration) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Text(
-        duration.toString(),
-        style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12),
-      ),
+      child: Text(duration.toString(),
+          style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12)),
     );
   }
 
@@ -544,7 +533,30 @@ class _InputPanel extends StatelessWidget {
             children: [
               Text('Panel de Entrada',
                   style: Theme.of(context).textTheme.titleLarge),
+
+              // ***** CAMBIO 1: MENSAJE DE SUGERENCIA *****
               const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.indigo.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.indigoAccent),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Sugerencia: Use "INICIO" para la primera actividad y "FIN" para la última para mayor claridad.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
               const Row(children: [
                 Expanded(
                     child: Text('Origen',
@@ -595,11 +607,13 @@ class _InputPanel extends StatelessWidget {
               Row(children: [
                 Expanded(
                     child: _buildLabeledTextField(
-                        'Nodo Inicial', state.startNodeController)),
+                        'Nodo Inicial', state.startNodeController,
+                        hint: 'INICIO')),
                 const SizedBox(width: 16),
                 Expanded(
                     child: _buildLabeledTextField(
-                        'Nodo Final', state.endNodeController)),
+                        'Nodo Final', state.endNodeController,
+                        hint: 'FIN')),
               ]),
               const SizedBox(height: 24),
               Row(
@@ -637,22 +651,26 @@ class _InputPanel extends StatelessWidget {
   }
 
   Widget _buildTextField(TextEditingController controller,
-          {bool isNumber = false}) =>
+          {bool isNumber = false, String? hint}) =>
       TextField(
         controller: controller,
         keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        decoration:
-            const InputDecoration(border: OutlineInputBorder(), isDense: true),
+        decoration: InputDecoration(
+          border: const OutlineInputBorder(),
+          isDense: true,
+          hintText: hint, // <-- La "sombra"
+        ),
       );
 
-  Widget _buildLabeledTextField(
-          String label, TextEditingController controller) =>
+  // ***** CAMBIO 2: AÑADIR EL PARÁMETRO "HINT" *****
+  Widget _buildLabeledTextField(String label, TextEditingController controller,
+          {String? hint}) =>
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          _buildTextField(controller),
+          _buildTextField(controller, hint: hint),
         ],
       );
 }
@@ -860,6 +878,7 @@ class _ResultsPanel extends StatelessWidget {
         ],
       );
 }
+
 // // Analizador de Rutas de Proyecto
 
 // // Una aplicación de escritorio y móvil desarrollada con Flutter para calcular y visualizar la ruta crítica de proyectos.
